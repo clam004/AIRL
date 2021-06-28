@@ -1,5 +1,10 @@
 # Adversarial Inverse Reinforcement Learning
 
+
+`sudo pip3 install BOX2D`
+
+`pip3 install 'gym[all]'` 
+
 ## References
 [[1]](http://papers.nips.cc/paper/6391-generative-adversarial-imitation-learning) Ho, Jonathan, and Stefano Ermon. "Generative adversarial imitation learning." Advances in neural information processing systems. 2016.
 
