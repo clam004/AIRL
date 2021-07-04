@@ -1,5 +1,5 @@
 import torch
-
+from torch.optim import Adam
 from torch.distributions import MultivariateNormal  
 from network import FeedForwardNN
 
@@ -28,6 +28,8 @@ class PPO:
         # Create the covariance matrix
         self.cov_mat = torch.diag(self.cov_var) # Sigma 
 
+        self.actor_optim = Adam(self.actor.parameters(), lr=self.lr)
+
     def _init_hyperparameters(self):
 
         # Default value for hyperparameters, will need to change later
@@ -35,6 +37,15 @@ class PPO:
         self.max_timesteps_per_episode = 1600 # timesteps per episode
 
         self.gamma = 0.95
+
+        # number of epochs is chosen arbitrarily to be 5 
+        self.n_updates_per_iteration = 5
+
+        # the PPO paper recommends a epsilon of 0.2
+        self.clip = 0.2
+
+        # set learning rate
+        self.lr = 0.005
 
     def get_action(self, obs):
 
@@ -145,6 +156,18 @@ class PPO:
         # return the batch of episodes
         return batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens
 
+    def evaluate(self, batch_obs, batch_acts):
+
+        # Query critic network for a value V for each obs in batch_obs
+        V = self.critic(batch_obs).squeeze()
+
+        # Query actor network for the log_prob of each action taken because of batch_obs
+        mean = self.actor(batch_obs)
+        dist = MultivariateNormal(mean, self.cov_mat)
+        log_probs = dist.log_prob(batch_acts)
+
+        return V, log_probs
+
     def learn(self, total_timesteps):
 
         """
@@ -156,8 +179,66 @@ class PPO:
 
         t_so_far = 0 # timesteps rolled out so far, all batches
 
-        # ALG STEP 2 - main learning loop
+        # ALG STEP 2 - main learning loop, for iterations k = 0,1,2 .. do
         while t_so_far < total_timesteps:
 
+            # ALG STEP 3 = collect set of trajectories D_k = {T_i} by running policy
+            # batch_log_probs is used for pi_theta_k(a_t|s_t)
+            batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens = self.rollout()
+
+            # Calculate V_{phi,k} for this iteration, not for this epoch
+            V, _ = self.evaluate(batch_obs, batch_acts)
+
+            # ALG STEP 5 -Calculate advantage for this k-th iteration under the while loop
+            A_k = batch_rtgs - V.detach()
+
+            # Normalize advantages to stabilized training even more
+            A_k = (A_k - A_k.mean())/(A_k.std() + 1e-10)
+
             # increment t_so_far
+
+            for _ in range(self.n_updates_per_iteration):
+
+                # Calculate pi_theta(a_t|s_t)
+                _, curr_log_probs = self.evaluate(batch_obs, batch_acts)
+
+                """
+                Importance sampling
+                recall that the importance ratio pi_theta(a_t|s_t)/pi_theta_k(a_t|s_t)
+                is inside the PPO-Clip objective of step 6
+
+                recall that log(a/b) = log(a) - log(b)
+                recall that e^(ln(a)) =  a
+
+                this means that a/b = e^(log(a) - log(b))
+                which means e^(curr_log_probs - batch_log_probs) = curr_probs/batch_probs
+
+                ratios = curr_probs/batch_probs
+                """
+
+                # note that curr_log_probs is not detached
+                ratios = torch.exp(curr_log_probs - batch_log_probs)
+
+                # The PPO-Clip objective has a min function between two surrogate losses
+                # surr1 is the first surrogate loss in the min func
+                # surr2 is the 2nd surrogate loss in the min func
+                surr1 = ratios * A_k
+
+                # ratios get cliped between 0.8 and 1.2 if epsilon = 0.2
+                surr2 = torch.clamp(ratios, 1 - self.clip, 1 + self.clip) * A_k 
+
+                # the entire actor loss as a minimum of two surrogate losses. As the 2 summations 
+                # in the pseudocode, suggest, this is across each timestep of each trajectory
+                # of this particular epoch of this particular iteration. The minus sign
+                # is because we actually want to maximize this objective, ie the advantage
+                actor_loss = (-torch.min(surr1, surr2)).mean()
+
+                # Calculate gradients, do backprop on actor network
+                self.actor_optim.zero_grad() # clean gradients from optimizer
+                actor_loss.backward() # calculate gradients wrt actor objective
+                self.actor_optim.step() # apply gradients to update the actor parameters
+
+
+
+
 
