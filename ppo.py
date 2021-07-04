@@ -1,7 +1,11 @@
+
+import numpy as np
 import torch
+from torch import nn
 from torch.optim import Adam
 from torch.distributions import MultivariateNormal  
 from network import FeedForwardNN
+
 
 class PPO:
 
@@ -28,15 +32,16 @@ class PPO:
         # Create the covariance matrix
         self.cov_mat = torch.diag(self.cov_var) # Sigma 
 
+        # initialize optimizers, point them to the parameters of our networks
         self.actor_optim = Adam(self.actor.parameters(), lr=self.lr)
+        self.critic_optim = Adam(self.critic.parameters(), lr=self.lr)
 
     def _init_hyperparameters(self):
 
         # Default value for hyperparameters, will need to change later
         self.timesteps_per_batch = 4800       # timesteps per batch
         self.max_timesteps_per_episode = 1600 # timesteps per episode
-
-        self.gamma = 0.95
+        self.gamma = 0.95 # discount factor
 
         # number of epochs is chosen arbitrarily to be 5 
         self.n_updates_per_iteration = 5
@@ -168,13 +173,13 @@ class PPO:
 
         return V, log_probs
 
-    def learn(self, total_timesteps):
+    def learn(self, total_timesteps, track_progress = False):
 
         """
         There are 3 levels of accumulation of state, action, rewards tuples:
         There is each training run (ie learn()), each batch, and each episode in a batch
 
-        rollout runs a batch, which might have several episodes
+        An iteration k, runs a batch of episodes, aka rollouts.
         """
 
         t_so_far = 0 # timesteps rolled out so far, all batches
@@ -187,20 +192,18 @@ class PPO:
             batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens = self.rollout()
 
             # Calculate V_{phi,k} for this iteration, not for this epoch
-            V, _ = self.evaluate(batch_obs, batch_acts)
+            V_k, _ = self.evaluate(batch_obs, batch_acts)
 
             # ALG STEP 5 -Calculate advantage for this k-th iteration under the while loop
-            A_k = batch_rtgs - V.detach()
+            A_k = batch_rtgs - V_k.detach()
 
             # Normalize advantages to stabilized training even more
             A_k = (A_k - A_k.mean())/(A_k.std() + 1e-10)
 
-            # increment t_so_far
-
             for _ in range(self.n_updates_per_iteration):
 
-                # Calculate pi_theta(a_t|s_t)
-                _, curr_log_probs = self.evaluate(batch_obs, batch_acts)
+                # Calculate V_phi, pi_theta(a_t|s_t)
+                V, curr_log_probs = self.evaluate(batch_obs, batch_acts)
 
                 """
                 Importance sampling
@@ -233,10 +236,37 @@ class PPO:
                 # is because we actually want to maximize this objective, ie the advantage
                 actor_loss = (-torch.min(surr1, surr2)).mean()
 
+                """
+                We will be doing 2 backprops on our computational graph
+                both the actor and critic loss computation graphs converge a bit up the graph, 
+                for example, batch_rtgs is used to calculate both A_k in the surrogate actor loss
+                and also the critic MSE loss. 
+                we’ll need to add a retain_graph=True to 
+                backward for either actor or critic (depends on which we back propagate on first). 
+                Otherwise, we’ll get an error saying that the buffers have already been 
+                freed when trying to run backward through the graph a second time.
+                """
                 # Calculate gradients, do backprop on actor network
                 self.actor_optim.zero_grad() # clean gradients from optimizer
-                actor_loss.backward() # calculate gradients wrt actor objective
+                actor_loss.backward(retain_graph=True) # calculate gradients wrt actor objective
                 self.actor_optim.step() # apply gradients to update the actor parameters
+
+                # the value function is updated by minimizing a mean-squared error loss 
+                critic_loss = nn.MSELoss()(V, batch_rtgs)
+
+                # Calculate gradients, do backprop on critic network
+                self.critic_optim.zero_grad() # clean gradients from optimizer
+                critic_loss.backward() # calculate gradients wrt critic objective
+                self.critic_optim.step() # apply gradients to update the critic parameters
+
+            # increment t_so_far with how many timesteps we collected this batch iteration
+            t_so_far += np.sum(batch_lens)
+            if track_progress:
+                print('actor_loss', actor_loss.data, 
+                      'last return', batch_rtgs[-1],
+                      't_so_far', t_so_far, '/', total_timesteps,
+                      )
+
 
 
 
