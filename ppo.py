@@ -28,7 +28,7 @@ class PPO:
         # but during testing will be deterministic
 
         # standard deviation does not need to be 0.5
-        self.cov_var = torch.full(size=(self.act_dim,), fill_value=0.5)
+        self.cov_var = torch.full(size=(self.act_dim,), fill_value=0.4)
         # Create the covariance matrix
         self.cov_mat = torch.diag(self.cov_var) # Sigma 
 
@@ -39,18 +39,18 @@ class PPO:
     def _init_hyperparameters(self):
 
         # Default value for hyperparameters, will need to change later
-        self.timesteps_per_batch = 4800       # timesteps per batch
-        self.max_timesteps_per_episode = 1600 # timesteps per episode
-        self.gamma = 0.95 # discount factor
+        self.timesteps_per_batch = 6000       # timesteps per batch
+        self.max_timesteps_per_episode = 2000 # timesteps per episode
+        self.gamma = 0.99 # discount factor
 
         # number of epochs is chosen arbitrarily to be 5 
         self.n_updates_per_iteration = 5
 
         # the PPO paper recommends a epsilon of 0.2
-        self.clip = 0.2
+        self.clip = 0.1
 
         # set learning rate
-        self.lr = 0.005
+        self.lr = 0.001
 
     def get_action(self, obs):
 
@@ -182,6 +182,7 @@ class PPO:
         An iteration k, runs a batch of episodes, aka rollouts.
         """
 
+        best_return = 5
         t_so_far = 0 # timesteps rolled out so far, all batches
 
         # ALG STEP 2 - main learning loop, for iterations k = 0,1,2 .. do
@@ -261,11 +262,26 @@ class PPO:
 
             # increment t_so_far with how many timesteps we collected this batch iteration
             t_so_far += np.sum(batch_lens)
+
+            last_return = float(batch_rtgs.mean().data)
+
+            if (last_return > best_return):
+                best_return = last_return
+                print('new best_return', best_return)
+                torch.save(self.actor.state_dict(), './ppo_actor.pth')
+                torch.save(self.critic.state_dict(), './ppo_critic.pth')
+
             if track_progress:
                 print('actor_loss', actor_loss.data, 
-                      'last return', batch_rtgs[-1],
+                      'last return', last_return,
                       't_so_far', t_so_far, '/', total_timesteps,
                       )
+            
+ 
+
+
+
+
 
 
 
